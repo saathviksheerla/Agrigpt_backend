@@ -57,20 +57,20 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 MCP_TIMEOUT    = float(os.getenv("MCP_TIMEOUT", "30"))
 
 # ── Multi-MCP Configuration ──────────────────────────────────────────────────
-
-
-MCP_SERVERS: List[Dict[str, str]] = [
-    {
-        "name":    "Alumnx",
-        "url":     os.getenv("ALUMNX_MCP_URL", "").strip(),
-        "api_key": os.getenv("ALUMNX_MCP_API_KEY", "").strip(),
-    },
-    {
-        "name":    "Vignan",
-        "url":     os.getenv("VIGNAN_MCP_URL", "").strip(),
-        "api_key": os.getenv("VIGNAN_MCP_API_KEY", "").strip(),
-    },
-]
+# COMMENTED OUT MCP CONFIGURATION
+# MCP_SERVERS: List[Dict[str, str]] = [
+#     {
+#         "name":    "Alumnx",
+#         "url":     os.getenv("ALUMNX_MCP_URL", "").strip(),
+#         "api_key": os.getenv("ALUMNX_MCP_API_KEY", "").strip(),
+#     },
+#     {
+#         "name":    "Vignan",
+#         "url":     os.getenv("VIGNAN_MCP_URL", "").strip(),
+#         "api_key": os.getenv("VIGNAN_MCP_API_KEY", "").strip(),
+#     },
+# ]
+MCP_SERVERS = []
 
 MONGODB_URI        = os.getenv("MONGODB_URI")
 MONGODB_DB         = os.getenv("MONGODB_DB", "agrigpt")
@@ -86,162 +86,82 @@ MAX_MESSAGES = 20
 global_tool_results: List[Dict[str, Any]] = []
 
 # ============================================================
-# MongoDB Setup
+# MongoDB Setup (COMMENTED OUT)
 # ============================================================
-mongo_client   = MongoClient(MONGODB_URI)
-db             = mongo_client[MONGODB_DB]
-chat_sessions: Collection = db[MONGODB_COLLECTION]
+# mongo_client   = MongoClient(MONGODB_URI)
+# db             = mongo_client[MONGODB_DB]
+# chat_sessions: Collection = db[MONGODB_COLLECTION]
 
-chat_sessions.create_index([("chat_id",      ASCENDING)], unique=True)
-chat_sessions.create_index([("phone_number", ASCENDING)])
-chat_sessions.create_index([("updated_at",   ASCENDING)])
+# chat_sessions.create_index([("chat_id",      ASCENDING)], unique=True)
+# chat_sessions.create_index([("phone_number", ASCENDING)])
+# chat_sessions.create_index([("updated_at",   ASCENDING)])
 
-print(f"Connected to MongoDB: {MONGODB_DB}.{MONGODB_COLLECTION}")
+# print(f"Connected to MongoDB: {MONGODB_DB}.{MONGODB_COLLECTION}")
+
+# SIMPLE IN-MEMORY MEMORY FOR HISTORY
+in_memory_history = {}
 
 # ============================================================
 # MongoDB Memory Helpers
 # ============================================================
 
 def load_history(chat_id: str) -> list:
-    """Load stored messages for a chat session."""
-    doc = chat_sessions.find_one({"chat_id": chat_id})
-    if not doc or "messages" not in doc:
-        return []
-
-    reconstructed = []
-    for m in doc["messages"]:
-        role    = m.get("role")
-        content = m.get("content", "")
-        if role == "human":
-            reconstructed.append(HumanMessage(content=content))
-        elif role == "ai":
-            reconstructed.append(AIMessage(content=content))
-        elif role == "system":
-            reconstructed.append(SystemMessage(content=content))
-    return reconstructed
-
+    """Load stored messages from in-memory history."""
+    return in_memory_history.get(chat_id, [])
 
 def save_history(chat_id: str, messages: list, phone_number: str | None = None):
-    """Persist updated conversation history to MongoDB under chat_id."""
-    storable = []
-    for msg in messages:
-        if isinstance(msg, HumanMessage):
-            content = msg.content if isinstance(msg.content, str) else str(msg.content)
-            storable.append({"role": "human", "content": content})
+    """Persist updated conversation history in-memory."""
+    in_memory_history[chat_id] = messages
 
-        elif isinstance(msg, AIMessage):
-            content = msg.content
-            if isinstance(content, str) and content.strip():
-                storable.append({"role": "ai", "content": content})
-            elif isinstance(content, list):
-                text_parts = [
-                    block.get("text", "") if isinstance(block, dict) else str(block)
-                    for block in content
-                ]
-                joined = " ".join(t for t in text_parts if t.strip())
-                if joined.strip():
-                    storable.append({"role": "ai", "content": joined})
 
-    # Pair-aware sliding window
-    if len(storable) <= MAX_MESSAGES:
-        window = storable
-    else:
-        pairs_to_collect = MAX_MESSAGES // 2
-        pairs_collected  = 0
-        cutoff_index     = 0
-        i = len(storable) - 1
+# ============================================================
+# NEW SIMPLE TOOLS
+# ============================================================
 
-        while i >= 0 and pairs_collected < pairs_to_collect:
-            if storable[i]["role"] == "ai" and i > 0 and storable[i - 1]["role"] == "human":
-                pairs_collected += 1
-                cutoff_index = i - 1
-                i -= 2
-            else:
-                i -= 1
-
-        window = storable[cutoff_index:] if pairs_collected > 0 else storable[-MAX_MESSAGES:]
-
-    # Upsert
-    now = datetime.now(timezone.utc)
-    update_fields: dict = {
-        "messages":   window,
-        "updated_at": now,
+def simulate_pests(crop_name: str, location: str = "general") -> str:
+    """
+    Simulates pest and disease activity for a given crop and location.
+    Provides identification and control measures.
+    """
+    pest_data = {
+        "rice": "Possible Blast disease or Stem Borer activity detected. Treatment: Use Tricyclazole for blast and Chlorantraniliprole for stem borer.",
+        "wheat": "Risk of Rust disease. Maintain proper irrigation and use fungicides if yellow spots appear.",
+        "tomato": "Early Blight likely due to humidity. Increase spacing and apply copper-based fungicides.",
+        "cotton": "Pink Bollworm alert! Use pheromone traps and avoid late sowing."
     }
-    if phone_number:
-        update_fields["phone_number"] = phone_number
+    result = pest_data.get(crop_name.lower(), f"No specific pest simulation data for {crop_name}. Advice: Monitor regularly for unusual leaf patterns or insects.")
+    return f"Pest Simulation Results for {crop_name} in {location}: {result}"
 
-    chat_sessions.update_one(
-        {"chat_id": chat_id},
-        {
-            "$set":         update_fields,
-            "$setOnInsert": {"created_at": now},
-        },
-        upsert=True
-    )
+def get_government_schemes(state: str = "India") -> str:
+    """
+    Retrieves information on agricultural government schemes and subsidies.
+    """
+    schemes = [
+        "PM-KISAN: Financial support of ₹6,000 per year to small and marginal farmers.",
+        "PM Fasal Bima Yojana: Affordable crop insurance for farmers against natural calamities.",
+        "Soil Health Card Scheme: Helps farmers understand soil nutrient status and recommended dosage of fertilizers.",
+        "Kisan Credit Card (KCC): Provides timely credit to farmers for their cultivation and other needs."
+    ]
+    return f"Active Government Schemes for {state}: " + " | ".join(schemes)
 
+pest_simulation_tool = StructuredTool.from_function(
+    func=simulate_pests,
+    name="simulate_pests",
+    description="Simulates pest and disease activity for a given crop and location."
+)
+
+government_schemes_tool = StructuredTool.from_function(
+    func=get_government_schemes,
+    name="government_schemes",
+    description="Retrieves information on agricultural government schemes and subsidies."
+)
 
 # ============================================================
-# MCP Client
+# MCP Client (COMMENTED OUT)
 # ============================================================
-class MCPClient:
-    """REST client matching MCP servers' custom endpoint format."""
-
-    def __init__(self, name: str, base_url: str, api_key: str | None = None):
-        self.name     = name
-        self.base_url = base_url.rstrip("/")
-        self.headers  = {"Content-Type": "application/json", "Accept": "application/json"}
-        if api_key:
-            self.headers["Authorization"] = f"Bearer {api_key}"
-        self.client = httpx.Client(timeout=MCP_TIMEOUT)
-
-    def list_tools(self) -> List[Dict[str, Any]]:
-        """Fetch tools from MCP server."""
-        print(f"[{self.name}] Fetching tools → {self.base_url}/list-tools")
-        response = self.client.get(
-            f"{self.base_url}/list-tools",
-            headers=self.headers,
-        )
-        response.raise_for_status()
-        raw_tools: List[Dict] = response.json().get("tools", [])
-
-        normalized = []
-        for tool in raw_tools:
-            params     = tool.get("parameters", {})
-            properties = {}
-            required   = []
-
-            for prop_name, prop_details in params.items():
-                properties[prop_name] = {
-                    "type":        prop_details.get("type", "string"),
-                    "description": prop_details.get("description", ""),
-                    "default":     prop_details.get("default", None),
-                }
-                if prop_details.get("required", False):
-                    required.append(prop_name)
-
-            normalized.append({
-                "name":        tool["name"],
-                "description": tool.get("description", ""),
-                "inputSchema": {
-                    "properties": properties,
-                    "required":   required,
-                },
-            })
-
-        print(f"[{self.name}] Found {len(normalized)} tool(s): {[t['name'] for t in normalized]}")
-        return normalized
-
-    def call_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
-        print(f"[{self.name}] Calling '{name}' | args: {arguments}")
-        response = self.client.post(
-            f"{self.base_url}/callTool",
-            headers=self.headers,
-            json={"name": name, "arguments": arguments},
-        )
-        response.raise_for_status()
-        result = response.json().get("result")
-        print(f"[{self.name}] Result: {str(result)[:300]}")
-        return result
+# class MCPClient:
+#     """REST client matching MCP servers' custom endpoint format."""
+# ... (rest of class commented out)
 
 
 # ============================================================
@@ -255,99 +175,8 @@ class State(TypedDict):
 # Agent Builder
 # ============================================================
 def build_agent():
-    TYPE_MAP = {
-        "string":  str,
-        "integer": int,
-        "number":  float,
-        "boolean": bool,
-        "array":   list,
-        "object":  dict,
-    }
-
-    def wrap_tool(
-        client: MCPClient,
-        tool_name: str,
-        description: str,
-        input_schema: Dict[str, Any],
-    ) -> StructuredTool:
-        """Wrap a single remote MCP tool as a LangChain StructuredTool."""
-        properties      = input_schema.get("properties", {})
-        required_fields = set(input_schema.get("required", []))
-        field_defs      = {}
-
-        for prop_name, prop_details in properties.items():
-            py_type   = TYPE_MAP.get(prop_details.get("type", "string"), str)
-            prop_desc = prop_details.get("description", "")
-            if prop_name in required_fields:
-                field_defs[prop_name] = (py_type, Field(..., description=prop_desc))
-            else:
-                field_defs[prop_name] = (
-                    py_type,
-                    Field(default=prop_details.get("default", None), description=prop_desc),
-                )
-
-        ArgsSchema = create_model(f"{tool_name}_args", **field_defs)
-
-        def remote_fn(_client=client, _name=tool_name, **kwargs) -> Any:
-            cleaned = {k: v for k, v in kwargs.items() if v is not None}
-            try:
-                result = _client.call_tool(_name, cleaned)
-                return result
-            except Exception as exc:
-                import traceback; traceback.print_exc()
-                return {
-                    "status": "error",
-                    "message": f"[{_client.name}] MCP error calling '{_name}': {exc}",
-                    "sources": []
-                }
-
-        return StructuredTool.from_function(
-            func=remote_fn,
-            name=tool_name,
-            description=f"[{client.name}] {description}",
-            args_schema=ArgsSchema,
-        )
-
-    # Discover tools from every configured MCP server
-    all_tools:  List[StructuredTool] = []
-    seen_names: set                  = set()
-
-    for cfg in MCP_SERVERS:
-        client = MCPClient(
-            name=cfg["name"],
-            base_url=cfg["url"],
-            api_key=cfg.get("api_key") or None,
-        )
-        try:
-            remote_tools = client.list_tools()
-        except Exception as exc:
-            print(f"[{cfg['name']}] WARNING — could not reach server: {exc}")
-            continue
-
-        for schema in remote_tools:
-            raw_name     = schema["name"]
-            description  = schema.get("description", "")
-            input_schema = schema.get("inputSchema", {})
-
-            unique_name = raw_name
-            if raw_name in seen_names:
-                unique_name = f"{cfg['name'].lower()}_{raw_name}"
-                print(
-                    f"[{cfg['name']}] Duplicate tool name '{raw_name}' "
-                    f"→ renamed to '{unique_name}'"
-                )
-            seen_names.add(unique_name)
-
-            all_tools.append(wrap_tool(client, unique_name, description, input_schema))
-
-    if not all_tools:
-        raise RuntimeError(
-            "No tools discovered from any MCP server. "
-            "Check that ALUMNX_MCP_URL and VIGNAN_MCP_URL are reachable."
-        )
-
-    print(f"\n✅ Total tools loaded: {len(all_tools)}")
-    print(f"   Tool names: {[t.name for t in all_tools]}\n")
+    # USE ONLY OUR SIMPLE TOOLS
+    all_tools = [pest_simulation_tool, government_schemes_tool]
 
     # LLM
     llm = ChatGoogleGenerativeAI(
@@ -666,19 +495,13 @@ def has_meaningful_tool_results(tool_results: List[Dict[str, Any]]) -> bool:
         
         result_data = tool_result.get("full_result") or tool_result.get("result")
         
-        # ✅ NEW: Handle list results directly (some tools like VignanUniversity return lists)
-        if isinstance(result_data, list):
-            if len(result_data) > 0:
-                print(f"[has_meaningful_tool_results] ✓ Found list result with {len(result_data)} items")
+        # ✅ Recognize non-empty strings as meaningful (for our simple tools)
+        if isinstance(result_data, str):
+            if len(result_data.strip()) > 10:
+                print(f"[has_meaningful_tool_results] ✓ Found meaningful string result")
                 return True
             continue
-        
-        if isinstance(result_data, str):
-            try:
-                result_data = json.loads(result_data)
-            except:
-                continue
-        
+
         if not isinstance(result_data, dict):
             continue
         
@@ -806,25 +629,17 @@ def test_chat(request: ChatRequest):
         history = load_history(request.chatId)
         print(f"[/test/chat] Loaded {len(history)} messages from history.")
         
-        system_prompt = SystemMessage(content="""You are AgriGPT, an expert agricultural assistant powered by a knowledge base of agricultural research and resources.
+        system_prompt = SystemMessage(content="""You are AgriGPT, a simple agricultural assistant.
 
-YOUR MISSION: Provide accurate, helpful answers using the knowledge base tools.
+YOUR MISSION: Provide accurate, helpful answers using your tools.
 
-TOOL USAGE (MANDATORY):
-1. Always call at least ONE tool before answering:
-   - sme_divesh: Agricultural knowledge, AI in farming, best practices
-   - pests_and_diseases: Crop diseases, pest identification, treatments
-   - govt_schemes: Government agricultural programs and subsidies
-   - VignanUniversity: Academic research and university resources
-
-2. Use tool results as your PRIMARY source of information
-
-3. If tools don't return relevant data, acknowledge this honestly
+TOOL USAGE:
+1. Use 'simulate_pests' for any questions about pests, diseases, or crop health.
+2. Use 'government_schemes' for questions about subsidies or agricultural programs.
 
 RESPONSE FORMATTING:
 - Write in PLAIN TEXT only - NO markdown
-- Be concise and helpful
-- Mention which tool(s) provided your information""")
+- Be concise and helpful""")
         
         history = [msg for msg in history if not isinstance(msg, SystemMessage)]
         history = [system_prompt] + history
